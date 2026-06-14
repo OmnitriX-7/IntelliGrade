@@ -16,26 +16,33 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 from web3 import Web3
 
+# Load Environment Variables
 load_dotenv()
 url: str = os.getenv("SUPABASE_URL")
 key: str = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(url, key)
 
+# Initialize Web3 Connection
 w3 = Web3(Web3.HTTPProvider(os.getenv("BLOCKCHAIN_PROVIDER_URL")))
 contract_address = os.getenv("CONTRACT_ADDRESS")
-private_key = os.getenv("WALLET_PRIVATE_KEY")
+private_key = os.getenv("WALLET_PRIVATE_KEY")  # Ensure this matches your .env exactly!
 
 account_address = None
 if private_key:
     account_address = w3.eth.account.from_key(private_key).address
 
+# Load Smart Contract ABI
 with open("contract_abi.json", "r") as file:
     contract_abi = json.load(file)
 
+# Securely Instatiate the Contract
 contract = None
 if contract_address:
-    contract = w3.eth.contract(address=contract_address, abi=contract_abi)
+    # Forces the address into the exact checksum format Web3 requires
+    checksummed_address = w3.to_checksum_address(contract_address)
+    contract = w3.eth.contract(address=checksummed_address, abi=contract_abi)
 
+# Initialize Backend Frameworks
 app = FastAPI()
 client = genai.Client()
 
@@ -47,6 +54,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Define Data Models
 class QuestionScore(BaseModel):
     question_id: int
     student_response_read: str
@@ -60,6 +68,7 @@ class GradeReport(BaseModel):
     max_score: float
     evaluation_summary: str
 
+# Helper Functions
 def extract_qr_code(image_bytes):
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -68,6 +77,7 @@ def extract_qr_code(image_bytes):
         return decoded_objects[0].data.decode('utf-8')
     return None
 
+# Routes
 @app.post("/setup-exam")
 async def setup_exam(
     exam_id: str = Form(...),
@@ -198,6 +208,7 @@ async def process_exam(file: UploadFile = File(...), exam_id: str = Form(...)):
         else:
             supabase.table("exam_evaluations").insert(evaluation_data).execute()
 
+        # Push to Blockchain
         if contract and private_key:
             try:
                 record_key = f"{exam_id}_{extracted_id}"
@@ -214,6 +225,7 @@ async def process_exam(file: UploadFile = File(...), exam_id: str = Form(...)):
                 })
                 
                 signed_tx = w3.eth.account.sign_transaction(tx, private_key=private_key)
+                # Updated syntax for modern web3.py versions
                 w3.eth.send_raw_transaction(signed_tx.raw_transaction)
 
             except Exception as blockchain_err:
