@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { styles } from './TeacherDashboardStyles';
 
+const API_BASE_URL = "https://intelligrade-0sah.onrender.com";
+
 export default function TeacherDashboard() {
   const [activeTab, setActiveTab] = useState('setup');
   
@@ -35,7 +37,7 @@ export default function TeacherDashboard() {
     formData.append("answer_key", answerKey);
 
     try {
-      const response = await fetch("http://localhost:8000/setup-exam", {
+      const response = await fetch(`${API_BASE_URL}/setup-exam`, {
         method: "POST",
         body: formData,
       });
@@ -70,7 +72,7 @@ export default function TeacherDashboard() {
       formData.append("file", files[i]);
 
       try {
-        const response = await fetch("http://localhost:8000/upload-and-grade", {
+        const response = await fetch(`${API_BASE_URL}/upload-and-grade`, {
           method: "POST",
           body: formData,
         });
