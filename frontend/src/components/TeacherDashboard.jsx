@@ -119,12 +119,12 @@ export default function TeacherDashboard() {
           <form onSubmit={handleSetupSubmit}>
             <div style={styles.formGroup}>
               <label style={styles.label}>Exam ID</label>
-              <input type="text" placeholder="e.g., oop-midterm" value={setupData.id} onChange={(e) => setSetupData({...setupData, id: e.target.value})} style={styles.input} required />
+              <input type="text" value={setupData.id} onChange={(e) => setSetupData({...setupData, id: e.target.value})} style={styles.input} required />
             </div>
             
             <div style={styles.formGroup}>
               <label style={styles.label}>Exam Name</label>
-              <input type="text" placeholder="e.g., OOP Midterm 2026" value={setupData.exam_name} onChange={(e) => setSetupData({...setupData, exam_name: e.target.value})} style={styles.input} required />
+              <input type="text" value={setupData.exam_name} onChange={(e) => setSetupData({...setupData, exam_name: e.target.value})} style={styles.input} required />
             </div>
             
             <div style={styles.formGroup}>
