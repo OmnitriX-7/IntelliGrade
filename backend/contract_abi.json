@@ -1,0 +1,39 @@
+[
+  {
+    "inputs": [
+      {
+        "internalType": "string",
+        "name": "recordKey",
+        "type": "string"
+      },
+      {
+        "internalType": "string",
+        "name": "dataHash",
+        "type": "string"
+      }
+    ],
+    "name": "recordGradeHash",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "string",
+        "name": "recordKey",
+        "type": "string"
+      }
+    ],
+    "name": "getGradeHash",
+    "outputs": [
+      {
+        "internalType": "string",
+        "name": "",
+        "type": "string"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  }
+]

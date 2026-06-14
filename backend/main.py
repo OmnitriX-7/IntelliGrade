@@ -4,6 +4,7 @@ import json
 import cv2
 import numpy as np
 import uvicorn
+import hashlib
 from pyzbar.pyzbar import decode
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,11 +14,27 @@ from google.genai import types
 from PIL import Image
 from dotenv import load_dotenv
 from supabase import create_client, Client
+from web3 import Web3
 
 load_dotenv()
 url: str = os.getenv("SUPABASE_URL")
 key: str = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(url, key)
+
+w3 = Web3(Web3.HTTPProvider(os.getenv("BLOCKCHAIN_PROVIDER_URL")))
+contract_address = os.getenv("CONTRACT_ADDRESS")
+private_key = os.getenv("WALLET_PRIVATE_KEY")
+
+account_address = None
+if private_key:
+    account_address = w3.eth.account.from_key(private_key).address
+
+with open("contract_abi.json", "r") as file:
+    contract_abi = json.load(file)
+
+contract = None
+if contract_address:
+    contract = w3.eth.contract(address=contract_address, abi=contract_abi)
 
 app = FastAPI()
 client = genai.Client()
@@ -180,6 +197,27 @@ async def process_exam(file: UploadFile = File(...), exam_id: str = Form(...)):
             supabase.table("exam_evaluations").update(evaluation_data).eq("id", eval_record_id).execute()
         else:
             supabase.table("exam_evaluations").insert(evaluation_data).execute()
+
+        if contract and private_key:
+            try:
+                record_key = f"{exam_id}_{extracted_id}"
+                raw_data_string = f"Student:{extracted_id}|Exam:{exam_id}|Score:{data['total_score']}"
+                data_hash = hashlib.sha256(raw_data_string.encode()).hexdigest()
+                
+                nonce = w3.eth.get_transaction_count(account_address)
+                tx = contract.functions.recordGradeHash(record_key, data_hash).build_transaction({
+                    'chainId': 80002, 
+                    'gas': 200000,
+                    'maxFeePerGas': w3.to_wei('30', 'gwei'),
+                    'maxPriorityFeePerGas': w3.to_wei('25', 'gwei'),
+                    'nonce': nonce,
+                })
+                
+                signed_tx = w3.eth.account.sign_transaction(tx, private_key=private_key)
+                w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+
+            except Exception as blockchain_err:
+                print(f"Blockchain Error: {blockchain_err}")
 
         return {"status": "success", "review_status": status}
 
