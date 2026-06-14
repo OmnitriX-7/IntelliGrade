@@ -1,0 +1,9 @@
+[
+  {
+    "question_id": "q_001",
+    "question": "Explain the four main pillars of Object-Oriented Programming.",
+    "ideal_answer": "Encapsulation, Abstraction, Inheritance, and Polymorphism.",
+    "max_marks": 5,
+    "rubric": "1 mark for each correctly identified pillar. 1 bonus mark for a cohesive explanation."
+  }
+]
