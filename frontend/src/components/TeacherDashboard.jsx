@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { styles } from './TeacherDashboardStyles';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || "https://intelligrade-0sah.onrender.com";
@@ -49,6 +49,7 @@ export default function TeacherDashboard() {
       setQuestionPaper(null);
       setAnswerKey(null);
     } catch (error) {
+      console.error("Failed to setup exam:", error);
       setSetupMessage({ text: "Failed to setup exam. Check your connection.", type: "error" });
     } finally {
       setIsSettingUp(false);
@@ -88,9 +89,11 @@ export default function TeacherDashboard() {
           id: crypto.randomUUID(),
           filename: files[i].name,
           status: data.review_status,
+          blockchain_anchored: data.blockchain_anchored ?? null,
         });
       } catch (error) {
-        processedResults.push({ id: crypto.randomUUID(), filename: files[i].name, status: "error" });
+        console.error(`Error grading file ${files[i].name}:`, error);
+        processedResults.push({ id: crypto.randomUUID(), filename: files[i].name, status: "error", blockchain_anchored: null });
       }
     }
 
@@ -187,6 +190,7 @@ export default function TeacherDashboard() {
                 <tr>
                   <th style={styles.th}>Filename</th>
                   <th style={styles.th}>Evaluation Status</th>
+                  <th style={styles.th}>Blockchain</th>
                 </tr>
               </thead>
               <tbody>
@@ -201,6 +205,11 @@ export default function TeacherDashboard() {
                         : result.status === 'error' ? '❌ Failed' 
                         : '✅ Graded & Recorded'}
                       </span>
+                    </td>
+                    <td style={styles.td}>
+                      {result.blockchain_anchored === true ? '🔗 Anchored'
+                      : result.blockchain_anchored === false ? '⚠️ Pending'
+                      : '—'}
                     </td>
                   </tr>
                 ))}
