@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { styles } from './TeacherDashboardStyles';
 
-const API_BASE_URL = "https://intelligrade-0sah.onrender.com";
+const API_BASE_URL = import.meta.env.VITE_API_URL || "https://intelligrade-0sah.onrender.com";
 
 export default function TeacherDashboard() {
   const [activeTab, setActiveTab] = useState('setup');
@@ -85,12 +85,12 @@ export default function TeacherDashboard() {
         const data = await response.json();
         
         processedResults.push({
-          id: Date.now() + i,
+          id: crypto.randomUUID(),
           filename: files[i].name,
           status: data.review_status,
         });
       } catch (error) {
-        processedResults.push({ id: Date.now() + i, filename: files[i].name, status: "error" });
+        processedResults.push({ id: crypto.randomUUID(), filename: files[i].name, status: "error" });
       }
     }
 

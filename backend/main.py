@@ -18,8 +18,10 @@ from web3 import Web3
 
 # Load Environment Variables
 load_dotenv()
-url: str = os.getenv("SUPABASE_URL")
-key: str = os.getenv("SUPABASE_KEY")
+url = os.getenv("SUPABASE_URL")
+key = os.getenv("SUPABASE_KEY")
+if not url or not key:
+    raise RuntimeError("SUPABASE_URL and SUPABASE_KEY must be set in .env")
 supabase: Client = create_client(url, key)
 
 # Initialize Web3 Connection
@@ -32,10 +34,11 @@ if private_key:
     account_address = w3.eth.account.from_key(private_key).address
 
 # Load Smart Contract ABI
-with open("contract_abi.json", "r") as file:
+_base_dir = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(_base_dir, "contract_abi.json"), "r") as file:
     contract_abi = json.load(file)
 
-# Securely Instatiate the Contract
+# Securely Instantiate the Contract
 contract = None
 if contract_address:
     # Forces the address into the exact checksum format Web3 requires
@@ -44,11 +47,12 @@ if contract_address:
 
 # Initialize Backend Frameworks
 app = FastAPI()
-client = genai.Client()
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
+# TODO: In production, set ALLOWED_ORIGINS env var to your frontend domain(s)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=os.getenv("ALLOWED_ORIGINS", "*").split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -72,6 +76,8 @@ class GradeReport(BaseModel):
 def extract_qr_code(image_bytes):
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        return None
     decoded_objects = decode(img)
     if decoded_objects:
         return decoded_objects[0].data.decode('utf-8')
@@ -162,6 +168,9 @@ async def process_exam(file: UploadFile = File(...), exam_id: str = Form(...)):
         if not qr_found:
             extracted_id = data["student_id"]
 
+        if not extracted_id or extracted_id.strip() == "":
+            raise HTTPException(status_code=422, detail="Could not determine student ID from the submission.")
+
         detailed_summary = ""
         extracted_list = []
         for qs in data["scores"]:
@@ -200,13 +209,11 @@ async def process_exam(file: UploadFile = File(...), exam_id: str = Form(...)):
             "needs_review_mark": needs_review
         }
 
-        existing_eval = supabase.table("exam_evaluations").select("id").eq("exam_id", exam_id).eq("student_id", extracted_id).execute()
-
-        if len(existing_eval.data) > 0:
-            eval_record_id = existing_eval.data[0]["id"]
-            supabase.table("exam_evaluations").update(evaluation_data).eq("id", eval_record_id).execute()
-        else:
-            supabase.table("exam_evaluations").insert(evaluation_data).execute()
+        # NOTE: Requires a UNIQUE constraint on (exam_id, student_id) in Supabase
+        supabase.table("exam_evaluations").upsert(
+            evaluation_data,
+            on_conflict="exam_id,student_id"
+        ).execute()
 
         # Push to Blockchain
         if contract and private_key:
@@ -215,7 +222,7 @@ async def process_exam(file: UploadFile = File(...), exam_id: str = Form(...)):
                 raw_data_string = f"Student:{extracted_id}|Exam:{exam_id}|Score:{data['total_score']}"
                 data_hash = hashlib.sha256(raw_data_string.encode()).hexdigest()
                 
-                nonce = w3.eth.get_transaction_count(account_address)
+                nonce = w3.eth.get_transaction_count(account_address, 'pending')
                 tx = contract.functions.recordGradeHash(record_key, data_hash).build_transaction({
                     'chainId': 80002, 
                     'gas': 200000,
@@ -230,6 +237,10 @@ async def process_exam(file: UploadFile = File(...), exam_id: str = Form(...)):
 
             except Exception as blockchain_err:
                 print(f"Blockchain Error: {blockchain_err}")
+                # Flag the evaluation so the teacher knows the on-chain anchor is missing
+                supabase.table("exam_evaluations").update({
+                    "review_status": "blockchain_pending"
+                }).eq("exam_id", exam_id).eq("student_id", extracted_id).execute()
 
         return {"status": "success", "review_status": status}
 
