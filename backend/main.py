@@ -7,7 +7,6 @@ import threading
 import numpy as np
 import uvicorn
 import hashlib
-from pyzbar.pyzbar import decode
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -116,9 +115,25 @@ def extract_qr_code(image_bytes):
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if img is None:
         return None
-    decoded_objects = decode(img)
-    if decoded_objects:
-        return decoded_objects[0].data.decode('utf-8')
+    
+    # 1. Primary detector: OpenCV built-in QRCodeDetector (zero OS dependencies)
+    try:
+        detector = cv2.QRCodeDetector()
+        data, _, _ = detector.detectAndDecode(img)
+        if data and data.strip():
+            return data.strip()
+    except Exception:
+        pass
+
+    # 2. Fallback detector: pyzbar (only if libzbar is available in the environment)
+    try:
+        from pyzbar.pyzbar import decode
+        decoded_objects = decode(img)
+        if decoded_objects:
+            return decoded_objects[0].data.decode('utf-8')
+    except Exception:
+        pass
+
     return None
 
 
