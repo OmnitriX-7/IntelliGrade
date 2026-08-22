@@ -1,0 +1,32 @@
+# Environment variables
+.env
+backend/.env
+*.env
+
+# Local agent & MCP configs (contains secret keys)
+.agents/
+_agents/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.venv/
+
+# Node / Frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Editor
+.vscode/
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

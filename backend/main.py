@@ -1,12 +1,14 @@
 import os
 import io
+import re
 import json
 import cv2
+import threading
 import numpy as np
 import uvicorn
 import hashlib
 from pyzbar.pyzbar import decode
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from google import genai
@@ -24,14 +26,22 @@ if not url or not key:
     raise RuntimeError("SUPABASE_URL and SUPABASE_KEY must be set in .env")
 supabase: Client = create_client(url, key)
 
+# Configuration Constants
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB per uploaded file
+API_SECRET_KEY = os.getenv("API_SECRET_KEY")  # Set this in .env to enable endpoint auth
+CHAIN_ID = int(os.getenv("CHAIN_ID", "80002"))  # Polygon Amoy default
+
 # Initialize Web3 Connection
 w3 = Web3(Web3.HTTPProvider(os.getenv("BLOCKCHAIN_PROVIDER_URL")))
 contract_address = os.getenv("CONTRACT_ADDRESS")
-private_key = os.getenv("WALLET_PRIVATE_KEY")  # Ensure this matches your .env exactly!
+private_key = os.getenv("WALLET_PRIVATE_KEY")
 
 account_address = None
 if private_key:
     account_address = w3.eth.account.from_key(private_key).address
+
+# Thread lock to prevent nonce collisions under concurrent requests
+_nonce_lock = threading.Lock()
 
 # Load Smart Contract ABI
 _base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -49,14 +59,42 @@ if contract_address:
 app = FastAPI()
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-# TODO: In production, set ALLOWED_ORIGINS env var to your frontend domain(s)
+# CORS — defaults to localhost dev server; set ALLOWED_ORIGINS in production
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("ALLOWED_ORIGINS", "*").split(","),
+    allow_origins=os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# --- Security & Validation Helpers ---
+
+async def verify_api_key(x_api_key: str = Header(None)):
+    """If API_SECRET_KEY is configured in .env, require a matching X-Api-Key header.
+    When API_SECRET_KEY is not set, authentication is skipped (open access)."""
+    if API_SECRET_KEY and x_api_key != API_SECRET_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key.")
+
+
+def validate_exam_id(exam_id: str):
+    """Ensures exam_id is a safe, bounded alphanumeric string."""
+    if not re.match(r'^[a-zA-Z0-9_-]{1,50}$', exam_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid exam_id. Use only letters, numbers, hyphens, and underscores (max 50 chars)."
+        )
+
+
+def check_file_size(file_bytes: bytes, filename: str):
+    """Rejects files exceeding the configured MAX_FILE_SIZE."""
+    if len(file_bytes) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File '{filename}' exceeds the {MAX_FILE_SIZE // (1024 * 1024)} MB limit."
+        )
+
 
 # Define Data Models
 class QuestionScore(BaseModel):
@@ -83,8 +121,9 @@ def extract_qr_code(image_bytes):
         return decoded_objects[0].data.decode('utf-8')
     return None
 
+
 # Routes
-@app.post("/setup-exam")
+@app.post("/setup-exam", dependencies=[Depends(verify_api_key)])
 async def setup_exam(
     exam_id: str = Form(...),
     exam_name: str = Form(...),
@@ -92,8 +131,17 @@ async def setup_exam(
     answer_key: UploadFile = File(...)
 ):
     try:
+        validate_exam_id(exam_id)
+
         qp_bytes = await question_paper.read()
         ak_bytes = await answer_key.read()
+        check_file_size(qp_bytes, question_paper.filename)
+        check_file_size(ak_bytes, answer_key.filename)
+
+        # Prevent duplicate exam creation — return a clear 409 instead of a DB error
+        existing = supabase.table("exams").select("id").eq("id", exam_id).execute()
+        if existing.data:
+            raise HTTPException(status_code=409, detail=f"Exam '{exam_id}' already exists. Use a different ID.")
 
         qp_img = Image.open(io.BytesIO(qp_bytes))
         ak_img = Image.open(io.BytesIO(ak_bytes))
@@ -123,15 +171,22 @@ async def setup_exam(
 
         return {"status": "success", "message": "Exam successfully created!"}
 
+    except HTTPException as he:
+        raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to setup exam: {str(e)}")
 
-@app.post("/upload-and-grade")
+@app.post("/upload-and-grade", dependencies=[Depends(verify_api_key)])
 async def process_exam(file: UploadFile = File(...), exam_id: str = Form(...)):
     try:
+        validate_exam_id(exam_id)
+
         image_bytes = await file.read()
-        file_ext = file.filename.split('.')[-1].lower()
-        is_pdf = file_ext == "pdf"
+        check_file_size(image_bytes, file.filename)
+
+        # Robust file type detection: check extension AND content type
+        file_ext = os.path.splitext(file.filename or "")[1].lower()
+        is_pdf = file_ext == ".pdf" or file.content_type == "application/pdf"
         
         exam_res = supabase.table("exams").select("master_grading_criteria").eq("id", exam_id).execute()
         if len(exam_res.data) == 0:
@@ -215,25 +270,33 @@ async def process_exam(file: UploadFile = File(...), exam_id: str = Form(...)):
             on_conflict="exam_id,student_id"
         ).execute()
 
-        # Push to Blockchain
+        # Push to Blockchain (with nonce lock and receipt verification)
+        blockchain_anchored = False
         if contract and private_key:
             try:
                 record_key = f"{exam_id}_{extracted_id}"
                 raw_data_string = f"Student:{extracted_id}|Exam:{exam_id}|Score:{data['total_score']}"
                 data_hash = hashlib.sha256(raw_data_string.encode()).hexdigest()
                 
-                nonce = w3.eth.get_transaction_count(account_address, 'pending')
-                tx = contract.functions.recordGradeHash(record_key, data_hash).build_transaction({
-                    'chainId': 80002, 
-                    'gas': 200000,
-                    'maxFeePerGas': w3.to_wei('30', 'gwei'),
-                    'maxPriorityFeePerGas': w3.to_wei('25', 'gwei'),
-                    'nonce': nonce,
-                })
-                
-                signed_tx = w3.eth.account.sign_transaction(tx, private_key=private_key)
-                # Updated syntax for modern web3.py versions
-                w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+                # Lock to prevent nonce collisions when multiple requests arrive simultaneously
+                with _nonce_lock:
+                    nonce = w3.eth.get_transaction_count(account_address, 'pending')
+                    tx = contract.functions.recordGradeHash(record_key, data_hash).build_transaction({
+                        'chainId': CHAIN_ID,
+                        'gas': 200000,
+                        'maxFeePerGas': w3.to_wei('30', 'gwei'),
+                        'maxPriorityFeePerGas': w3.to_wei('25', 'gwei'),
+                        'nonce': nonce,
+                    })
+                    signed_tx = w3.eth.account.sign_transaction(tx, private_key=private_key)
+                    tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+
+                # Wait for confirmation outside the lock so other requests aren't blocked
+                receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+                if receipt.status == 1:
+                    blockchain_anchored = True
+                else:
+                    raise Exception("Transaction reverted on-chain")
 
             except Exception as blockchain_err:
                 print(f"Blockchain Error: {blockchain_err}")
@@ -242,7 +305,7 @@ async def process_exam(file: UploadFile = File(...), exam_id: str = Form(...)):
                     "review_status": "blockchain_pending"
                 }).eq("exam_id", exam_id).eq("student_id", extracted_id).execute()
 
-        return {"status": "success", "review_status": status}
+        return {"status": "success", "review_status": status, "blockchain_anchored": blockchain_anchored}
 
     except HTTPException as he:
         raise he

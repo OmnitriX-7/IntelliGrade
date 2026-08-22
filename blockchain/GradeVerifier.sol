@@ -22,7 +22,9 @@ contract GradeVerifier {
     }
 
     // Saves the data to the map (Costs Gas / Write) — restricted to contract owner
+    // Once recorded, a hash cannot be overwritten — this preserves tamper detection
     function recordGradeHash(string memory recordKey, string memory dataHash) public onlyOwner {
+        require(bytes(gradeHashes[recordKey]).length == 0, "Grade hash already recorded and is immutable");
         gradeHashes[recordKey] = dataHash;
         emit GradeRecorded(recordKey, dataHash);
     }
